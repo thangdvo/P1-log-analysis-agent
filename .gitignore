@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Data files - too large and may contain sensitive info
+data/
+
+# Envronment variables - never commit these
+.env
+*.key
