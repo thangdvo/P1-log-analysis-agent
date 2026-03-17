@@ -208,7 +208,12 @@ def _clip_timeline(timeline: list[dict], head: int = 20, tail: int = 5) -> list[
     )
 
 
-def execute_tool(name: str, tool_input: dict, strip_timeline: bool = False) -> str:
+def execute_tool(
+    name: str,
+    tool_input: dict,
+    strip_timeline: bool = False,
+    log_file: Path = DEFAULT_LOG,
+) -> str:
     """
     Run the named tool and return a JSON string suitable for Claude to read.
     Large results are clipped to keep the context window manageable.
@@ -217,12 +222,15 @@ def execute_tool(name: str, tool_input: dict, strip_timeline: bool = False) -> s
         and return only the summary dict. The summary contains all aggregate stats
         the investigation loop needs; omitting the timeline saves ~85% of the
         payload and keeps it out of subsequent re-sent message history.
+    log_file: path to the log file to analyze. Defaults to the local
+        auth_modern.log but can be overridden (e.g., a /tmp path in Lambda).
     """
     try:
         if name == "search_logs":
             result = search_logs(
                 query=tool_input["query"],
                 max_results=min(int(tool_input.get("max_results", 200)), 1000),
+                log_file=log_file,
             )
             # Clip matches — Claude only needs a sample + the total count
             if len(result["matches"]) > 30:
@@ -234,11 +242,12 @@ def execute_tool(name: str, tool_input: dict, strip_timeline: bool = False) -> s
                 )
 
         elif name == "count_events":
-            result = count_events(event_type=tool_input["event_type"])
+            result = count_events(event_type=tool_input["event_type"], log_file=log_file)
 
         elif name == "detect_brute_force":
             result = detect_brute_force(
-                threshold=int(tool_input.get("threshold", 5))
+                threshold=int(tool_input.get("threshold", 5)),
+                log_file=log_file,
             )
             # Keep top 20 attackers; Claude doesn't need all 361
             if len(result["attackers"]) > 20:
@@ -249,7 +258,7 @@ def execute_tool(name: str, tool_input: dict, strip_timeline: bool = False) -> s
                 )
 
         elif name == "correlate_events":
-            result = correlate_events(ip=tool_input["ip"])
+            result = correlate_events(ip=tool_input["ip"], log_file=log_file)
             result = dict(result)
             if strip_timeline:
                 # Investigation mode: keep only the summary block.
@@ -284,7 +293,7 @@ def execute_tool(name: str, tool_input: dict, strip_timeline: bool = False) -> s
 # ---------------------------------------------------------------------------
 
 
-def ask(question: str, verbose: bool = False) -> str:
+def ask(question: str, verbose: bool = False, log_file: Path = DEFAULT_LOG) -> str:
     """
     Send a natural language question to the agent and return the final answer.
 
@@ -331,7 +340,7 @@ def ask(question: str, verbose: bool = False) -> str:
             # Execute every tool Claude requested, collect results
             tool_results = []
             for tb in tool_use_blocks:
-                result_str = execute_tool(tb.name, tb.input)
+                result_str = execute_tool(tb.name, tb.input, log_file=log_file)
                 if verbose:
                     preview = result_str[:200] + ("..." if len(result_str) > 200 else "")
                     print(f"[result] {preview}")
@@ -707,7 +716,9 @@ def run_investigation(log_file: Path = DEFAULT_LOG) -> dict:
                     args_preview = json.dumps(tb.input, separators=(",", ":"))
                     print(f"  → {tb.name}({args_preview})")
 
-                    result_str = execute_tool(tb.name, tb.input, strip_timeline=True)
+                    result_str = execute_tool(
+                        tb.name, tb.input, strip_timeline=True, log_file=log_file
+                    )
                     result_obj = json.loads(result_str)
 
                     # Print a meaningful observation summary
