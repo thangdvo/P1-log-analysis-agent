@@ -208,10 +208,15 @@ def _clip_timeline(timeline: list[dict], head: int = 20, tail: int = 5) -> list[
     )
 
 
-def execute_tool(name: str, tool_input: dict) -> str:
+def execute_tool(name: str, tool_input: dict, strip_timeline: bool = False) -> str:
     """
     Run the named tool and return a JSON string suitable for Claude to read.
     Large results are clipped to keep the context window manageable.
+
+    strip_timeline: if True, drop the timeline list from correlate_events results
+        and return only the summary dict. The summary contains all aggregate stats
+        the investigation loop needs; omitting the timeline saves ~85% of the
+        payload and keeps it out of subsequent re-sent message history.
     """
     try:
         if name == "search_logs":
@@ -245,9 +250,20 @@ def execute_tool(name: str, tool_input: dict) -> str:
 
         elif name == "correlate_events":
             result = correlate_events(ip=tool_input["ip"])
-            # Keep summary intact; clip the timeline
-            if len(result.get("timeline", [])) > 25:
-                result = dict(result)
+            result = dict(result)
+            if strip_timeline:
+                # Investigation mode: keep only the summary block.
+                # The summary has all aggregate stats (counts, targeted users,
+                # first/last seen); dropping the raw timeline cuts ~85% of this
+                # result's token footprint and everything re-sent after this step.
+                result.pop("timeline", None)
+                result["timeline_note"] = (
+                    f"Timeline omitted (investigation mode). "
+                    f"Total events: {result['total_events']}. "
+                    "Summary above has all aggregate statistics."
+                )
+            elif len(result.get("timeline", [])) > 25:
+                # Q&A mode: clip to head+tail so user still sees sample events
                 result["timeline"] = _clip_timeline(result["timeline"])
                 result["timeline_note"] = (
                     f"Timeline clipped to 25 representative events "
@@ -282,8 +298,8 @@ def ask(question: str, verbose: bool = False) -> str:
         with client.messages.stream(
             model=MODEL,
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
+            system=_cached_system(SYSTEM_PROMPT),
+            tools=TOOLS_CACHED,
             messages=messages,
         ) as stream:
             # Print text tokens in real time
@@ -496,6 +512,29 @@ SUBMIT_REPORT_TOOL: dict = {
 
 INVESTIGATION_TOOLS = TOOLS + [SUBMIT_REPORT_TOOL]
 
+
+# ---------------------------------------------------------------------------
+# Prompt-caching helpers
+# ---------------------------------------------------------------------------
+# Adding cache_control to the last tool in a list causes the API to cache
+# the system prompt + all tool definitions together, eliminating the fixed
+# ~1,900-token overhead on every call after the first in a run.
+
+def _with_cache_control(tools: list[dict]) -> list[dict]:
+    """Return a copy of the tools list with cache_control on the last entry."""
+    result = list(tools)
+    result[-1] = {**result[-1], "cache_control": {"type": "ephemeral"}}
+    return result
+
+
+def _cached_system(prompt: str) -> list[dict]:
+    """Wrap a system prompt string in the block format required for caching."""
+    return [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]
+
+
+TOOLS_CACHED = _with_cache_control(TOOLS)
+INVESTIGATION_TOOLS_CACHED = _with_cache_control(INVESTIGATION_TOOLS)
+
 # Width of the report box
 _W = 70
 
@@ -621,8 +660,8 @@ def run_investigation(log_file: Path = DEFAULT_LOG) -> dict:
         with client.messages.stream(
             model=MODEL,
             max_tokens=8192,
-            system=INVESTIGATION_SYSTEM_PROMPT,
-            tools=INVESTIGATION_TOOLS,
+            system=_cached_system(INVESTIGATION_SYSTEM_PROMPT),
+            tools=INVESTIGATION_TOOLS_CACHED,
             messages=messages,
         ) as stream:
             # Print Claude's reasoning text in real time
@@ -668,7 +707,7 @@ def run_investigation(log_file: Path = DEFAULT_LOG) -> dict:
                     args_preview = json.dumps(tb.input, separators=(",", ":"))
                     print(f"  → {tb.name}({args_preview})")
 
-                    result_str = execute_tool(tb.name, tb.input)
+                    result_str = execute_tool(tb.name, tb.input, strip_timeline=True)
                     result_obj = json.loads(result_str)
 
                     # Print a meaningful observation summary

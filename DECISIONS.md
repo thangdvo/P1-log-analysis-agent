@@ -128,7 +128,31 @@ This also makes the tools independently testable — the test suite validates fi
 
 ---
 
-## 10. `.env` for API Key Management
+## 10. Prompt Caching on System Prompt + Tool Definitions
+
+**Decision:** Wrap the system prompt in a `cache_control` block and set `cache_control` on the last tool definition in every API call.
+
+**Why:** The system prompt + tool schema is ~1,900 tokens of identical content re-sent on every call in a run. With prompt caching, the first call in a run pays full price; every subsequent call reads from cache at ~10% of normal input token cost. For an 8-call investigation run this saves ~12% of total cost (~$0.07/run).
+
+**Implementation:** `_cached_system(prompt)` wraps a string into the `[{"type": "text", ..., "cache_control": {"type": "ephemeral"}}]` block format. `_with_cache_control(tools)` adds `cache_control` to the last tool in a list. Both are applied in `ask()` and `run_investigation()`.
+
+**Trade-off:** Negligible. The block format for system prompts is backward-compatible and the cache_control field is simply ignored if the content is below the 1,024-token minimum.
+
+---
+
+## 11. Summary-Only `correlate_events` in Investigation Mode
+
+**Decision:** In the autonomous investigator (`run_investigation`), strip the `timeline` list from `correlate_events` results — pass only the `summary` dict to Claude.
+
+**Why:** Each `correlate_events` call returns 750–1,500 raw timeline events after the head+tail clip. The summary block contains every aggregate statistic the investigation needs (`invalid_user_attempts`, `disconnects`, `brute_force_cutoffs`, `targeted_users`, `first_seen`, `last_seen`). Keeping the full timeline in the investigation loop means it gets re-sent on every subsequent API call — for 3–5 IP correlations this adds ~3,000–6,000 tokens of wasted context per call. Dropping the timeline saves ~19% of total investigation cost (~$0.11/run).
+
+**Implementation:** `execute_tool()` accepts `strip_timeline: bool = False`. The investigation loop passes `strip_timeline=True`; the Q&A loop uses the default `False` so users asking "show me all activity from IP X" still see sample timeline events.
+
+**Trade-off:** The investigator cannot narrate specific raw log lines in its reasoning. This is acceptable because the summary statistics (counts, timestamps, user lists) are sufficient for classification and the final report. A user who wants the raw timeline can use the Q&A mode directly.
+
+---
+
+## 12. `.env` for API Key Management
 
 **Decision:** Load `ANTHROPIC_API_KEY` from a `.env` file using `python-dotenv`, with `.env` in `.gitignore`.
 
