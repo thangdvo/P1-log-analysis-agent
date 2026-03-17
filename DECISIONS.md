@@ -159,3 +159,64 @@ This also makes the tools independently testable — the test suite validates fi
 **Why:** Hardcoding API keys in source or passing them as CLI arguments risks accidental exposure in shell history or git commits. The `.env` pattern is the standard Python convention for local secrets — it keeps the key out of the codebase while remaining convenient for local development.
 
 The `.gitignore` explicitly excludes `.env` and `data/` (logs may contain IP addresses that could be considered sensitive in some jurisdictions).
+
+---
+
+## 13. AWS Deployment Architecture
+
+**Decision:** Deploy the agent as a Lambda function triggered by S3 uploads, with SNS for alerting and CloudWatch for observability.
+
+**Architecture:**
+```
+S3 upload (logs/incoming/*.log)
+    │  s3:ObjectCreated
+    ▼
+Lambda: p1-log-analysis-agent  (Python 3.11, 512 MB, 15-min timeout)
+    ├─► Downloads log to /tmp, runs run_investigation()
+    ├─► Saves JSON report → S3 reports/
+    └─► SNS Publish → p1-security-alerts (email alert for Medium+)
+```
+
+**Why S3-triggered Lambda:**
+- Event-driven — zero cost when idle, only runs when a log file arrives
+- Serverless — no EC2 to manage or patch
+- The 15-minute Lambda timeout comfortably covers the ~2-minute investigation (8 Claude API calls)
+
+**Why 512 MB memory:** The 9.7 MB log file lives in `/tmp`; the `anthropic` SDK + `pydantic` add ~150 MB at peak. 512 MB gives comfortable headroom without overprovisioning.
+
+**Trade-off:** Cold starts add ~500 ms before the first tool call. Acceptable — the investigation takes ~2 minutes regardless.
+
+---
+
+## 14. Lambda Deployment Package: Platform-Targeted Wheels
+
+**Decision:** Build the deployment package using `pip install --platform manylinux2014_x86_64 --python-version 3.11 --only-binary=:all:` rather than a plain `pip install`.
+
+**Why:** `pydantic_core` (a dependency of `anthropic`) ships as a compiled C extension. Installing locally on Python 3.12 produces a `cpython-312` `.so` file that cannot load on Lambda's Python 3.11 runtime, causing `ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'` at invocation time. The `--platform` and `--python-version` flags force pip to download the pre-built `manylinux2014_x86_64 cp311` wheel, which matches Lambda's Amazon Linux 2023 environment exactly.
+
+**Trade-off:** The build must be run on an x86_64 host (or with these flags). If deploying to arm64 Lambda, change `--platform` to `manylinux2014_aarch64`.
+
+---
+
+## 15. IAM Least-Privilege Role
+
+**Decision:** The Lambda role has exactly four permission statements, each scoped to the minimum required resource.
+
+| Permission | Resource scoped to |
+|---|---|
+| `s3:GetObject` | `logs/incoming/*` only |
+| `s3:PutObject` | `reports/*` only |
+| `sns:Publish` | `p1-security-alerts` ARN only |
+| `logs:Create*/PutLogEvents` | Lambda's own log group only |
+
+**Why:** A common mistake is attaching `AmazonS3FullAccess` or `AmazonSNSFullAccess`. Scoping to specific prefixes and ARNs means a compromised Lambda function cannot read, overwrite, or delete anything outside its intended paths — and cannot publish to any other SNS topic in the account.
+
+---
+
+## 16. log_file Parameter Threading
+
+**Decision:** `execute_tool()` accepts an explicit `log_file: Path` parameter and passes it to every tool call, rather than relying on each tool's `DEFAULT_LOG`.
+
+**Why:** In Lambda, the log is downloaded to `/tmp/<filename>` — not the project's `data/auth_modern.log`. The original code accepted `log_file` in `run_investigation()` but silently dropped it before reaching the tool calls, causing every tool to fail with "No such file or directory" in Lambda. Threading the path explicitly makes the tools portable: the same code runs locally against `data/auth_modern.log` and in Lambda against `/tmp/auth_modern.log` without modification.
+
+**Trade-off:** Slightly more verbose call sites in `execute_tool()`. Worth it for correctness and testability.
