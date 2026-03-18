@@ -2,7 +2,7 @@
 
 An autonomous security investigation agent that drops a `.log` file into S3, runs a multi-step Claude Opus 4.6 ReAct loop against it, and produces a structured incident report with no human in the loop. Deployed on AWS (S3 + Lambda + SNS). Also runs locally for interactive Q&A.
 
-Built as Project 1 of a 12-project cloud security portfolio combining AI agent design with real AWS infrastructure.
+
 
 ---
 
