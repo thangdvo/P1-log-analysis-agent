@@ -341,18 +341,6 @@ pytest tests/ -v
 ```
 
 All 45 tests run against the real `auth_modern.log` with no mocks, no fixtures. Known facts (IP `218.75.153.170` is top attacker, `173.192.158.3` had 748 events in 4 min 39 sec) serve as regression anchors.
-
----
-
-## Skills Demonstrated
-
-- **Autonomous AI agent design**: ReAct pattern, `submit_report` as loop termination, mandatory investigation sequence enforced via system prompt
-- **AWS serverless architecture**: S3 event triggers, Lambda, SNS, CloudWatch, IAM least-privilege
-- **Cost engineering**: prompt caching, summary-only tool results, token footprint analysis
-- **Log analysis**: legacy syslog parsing, ISO 8601 modernization, brute-force detection, botnet correlation
-- **Python**: regex, datetime, boto3, structured return contracts, platform-targeted Lambda packaging
-- **Testing**: 45 data-driven regression tests against real security data
-
 ---
 
 ## Part of a 12-Project Cloud Security Portfolio
